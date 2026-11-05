@@ -140,6 +140,7 @@ def cmd_show_portfolio(options, session):
         print(f"- {code}: {format_amount(code, balance)}  → {value:.2f} {base}")
     print(SEPARATOR_LINE)
     print(f"ИТОГО: {format_money(total)} {base}")
+    print_stale_warning()
 
 
 def cmd_buy(options, session):
@@ -157,6 +158,7 @@ def cmd_buy(options, session):
     print(
         f"Оценочная стоимость покупки: {format_money(result['total'])} {result['base']}"
     )
+    print_stale_warning()
 
 
 def cmd_sell(options, session):
@@ -172,6 +174,7 @@ def cmd_sell(options, session):
     )
     print_changes(result["changes"])
     print(f"Оценочная выручка: {format_money(result['total'])} {result['base']}")
+    print_stale_warning()
 
 
 def cmd_get_rate(options, session):
@@ -238,7 +241,7 @@ def cmd_show_rates(options, session):
 
 def cmd_rates_history(options, session):
     """rates-history --currency [--limit] — таблица PrettyTable."""
-    limit = options.get("limit", "10")
+    limit = options.get("limit", str(usecases.DEFAULT_HISTORY_LIMIT))
     if not limit.isdigit() or int(limit) == 0:
         raise ValueError("'limit' должен быть целым положительным числом")
     records = usecases.rate_history(require(options, "currency"), int(limit))

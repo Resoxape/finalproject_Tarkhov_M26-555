@@ -16,6 +16,8 @@ from valutatrade_hub.core.models import Portfolio, User
 from valutatrade_hub.core.utils import (
     BASE_CURRENCY,
     convert,
+    format_amount,
+    parse_utc,
     validate_amount,
     validate_currency_code,
 )
@@ -28,6 +30,7 @@ settings = SettingsLoader()
 db = DatabaseManager()
 
 PAIR_SEPARATOR = "_"
+DEFAULT_HISTORY_LIMIT = 10
 CACHE_EMPTY_MESSAGE = (
     "Локальный кеш курсов пуст. Выполните 'update-rates', чтобы загрузить данные."
 )
@@ -62,6 +65,14 @@ def register_user(username, password):
     return user
 
 
+def find_user(user_id):
+    """Пользователь по id или None."""
+    for user in load_users():
+        if user.user_id == user_id:
+            return user
+    return None
+
+
 @log_action("LOGIN")
 def login_user(username, password):
     """Проверяет имя и пароль. Возвращает User."""
@@ -89,7 +100,7 @@ def _find_portfolio_item(items, user_id):
 def load_portfolio(user_id):
     """Портфель пользователя только для чтения."""
     items = db.read("portfolios", [])
-    return Portfolio.from_dict(_find_portfolio_item(items, user_id))
+    return Portfolio.from_dict(_find_portfolio_item(items, user_id), find_user(user_id))
 
 
 def _change_portfolio(user_id, action):
@@ -98,7 +109,7 @@ def _change_portfolio(user_id, action):
     def modify(items):
         """Применяет action к портфелю и сохраняет его в списке."""
         item = _find_portfolio_item(items, user_id)
-        portfolio = Portfolio.from_dict(item)
+        portfolio = Portfolio.from_dict(item, find_user(user_id))
         result = action(portfolio)
         item.update(portfolio.to_dict())
         return result
@@ -107,12 +118,6 @@ def _change_portfolio(user_id, action):
 
 
 # ---------- Курсы ----------
-
-
-def parse_utc(value):
-    """ISO-строка -> datetime UTC (строка без пояса считается UTC)."""
-    moment = datetime.fromisoformat(value)
-    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
 
 
 def read_rates_cache():
@@ -223,7 +228,7 @@ def list_rates(currency_code=None, top=None, base_currency=None):
     return pairs, cache.get("last_refresh", "")
 
 
-def rate_history(currency_code, limit=10):
+def rate_history(currency_code, limit=DEFAULT_HISTORY_LIMIT):
     """Последние замеры курса валюты к USD из exchange_rates.json."""
     code = get_currency(validate_currency_code(currency_code)).code
     records = [
@@ -272,7 +277,11 @@ def buy_currency(user_id, currency_code, amount):
         if code != BASE_CURRENCY:
             usd_wallet = portfolio.get_wallet(BASE_CURRENCY)
             if usd_wallet is None:
-                raise InsufficientFundsError("0.00", f"{cost:.2f}", BASE_CURRENCY)
+                raise InsufficientFundsError(
+                    format_amount(BASE_CURRENCY, 0.0),
+                    format_amount(BASE_CURRENCY, cost),
+                    BASE_CURRENCY,
+                )
             usd_before = usd_wallet.balance
             usd_wallet.withdraw(cost)
             changes.append((BASE_CURRENCY, usd_before, usd_wallet.balance))

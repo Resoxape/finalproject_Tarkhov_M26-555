@@ -15,6 +15,7 @@ from valutatrade_hub.core.utils import (
 
 MIN_PASSWORD_LENGTH = 4
 SALT_BYTES = 8
+BALANCE_PRECISION = 8  # знаков после запятой: убирает погрешность float
 
 # Фиксированные курсы для get_total_value: сколько USD стоит 1 единица валюты
 DEFAULT_EXCHANGE_RATES = {BASE_CURRENCY: 1.0, **FALLBACK_USD_RATES}
@@ -157,7 +158,7 @@ class Wallet:
     def deposit(self, amount):
         """Пополнение баланса на положительную сумму."""
         amount = validate_amount(amount)
-        self.balance = round(self._balance + amount, 8)
+        self.balance = round(self._balance + amount, BALANCE_PRECISION)
 
     def withdraw(self, amount):
         """Снятие средств, если баланс позволяет."""
@@ -167,7 +168,7 @@ class Wallet:
             raise InsufficientFundsError(
                 format_amount(code, self._balance), format_amount(code, amount), code
             )
-        self.balance = round(self._balance - amount, 8)
+        self.balance = round(self._balance - amount, BALANCE_PRECISION)
 
     def get_balance_info(self):
         """Строка с текущим балансом."""
@@ -203,7 +204,8 @@ class Portfolio:
         return dict(self._wallets)
 
     def add_currency(self, currency_code):
-        """Добавляет новый кошелёк; код валюты должен быть уникален."""
+        """Добавляет новый кошелёк; валюта должна быть известна и уникальна."""
+        currency_code = get_currency(currency_code).code  # CurrencyNotFoundError
         if currency_code in self._wallets:
             raise ValueError(f"Кошелёк '{currency_code}' уже есть в портфеле")
         wallet = Wallet(currency_code)

@@ -12,6 +12,8 @@ HTTP_OK = 200
 HTTP_UNAUTHORIZED = (401, 403)
 HTTP_TOO_MANY_REQUESTS = 429
 PAIR_SEPARATOR = "_"
+RATE_PRECISION = 8
+MS_IN_SECOND = 1000
 ISO_UTC_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 
 
@@ -57,7 +59,7 @@ class BaseApiClient(ABC):
             raise ApiRequestError(f"сетевая ошибка ({type(error).__name__})") from None
 
         self.last_meta = {
-            "request_ms": round((time.monotonic() - start) * 1000),
+            "request_ms": round((time.monotonic() - start) * MS_IN_SECOND),
             "status_code": response.status_code,
             "etag": response.headers.get("ETag"),
         }
@@ -138,7 +140,8 @@ class ExchangeRateApiClient(BaseApiClient):
         for code in self.config.FIAT_CURRENCIES:
             value = api_rates.get(code)
             if is_valid_rate(value):
-                rates[self.pair(code)] = round(1 / value, 8)  # 1 USD = value <code>
+                # API: 1 USD = value <code>; сохраняем курс <code>→USD
+                rates[self.pair(code)] = round(1 / value, RATE_PRECISION)
                 self.raw_ids[self.pair(code)] = code
         if not rates:
             raise ApiRequestError("в ответе нет курсов")
