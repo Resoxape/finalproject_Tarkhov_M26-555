@@ -4,14 +4,17 @@ import hashlib
 import secrets
 from datetime import datetime
 
+from valutatrade_hub.core.currencies import get_currency
+from valutatrade_hub.core.exceptions import InsufficientFundsError
 from valutatrade_hub.core.utils import (
     BASE_CURRENCY,
-    MIN_PASSWORD_LENGTH,
-    SALT_BYTES,
     STUB_USD_RATES,
     format_amount,
     validate_amount,
 )
+
+MIN_PASSWORD_LENGTH = 4
+SALT_BYTES = 8
 
 # Фиксированные курсы для get_total_value: сколько USD стоит 1 единица валюты
 DEFAULT_EXCHANGE_RATES = {BASE_CURRENCY: 1.0, **STUB_USD_RATES}
@@ -133,6 +136,11 @@ class Wallet:
         self.balance = balance  # через сеттер с проверкой
 
     @property
+    def currency(self):
+        """Объект Currency для кода кошелька (точка интеграции с currencies.py)."""
+        return get_currency(self.currency_code)
+
+    @property
     def balance(self):
         """Текущий баланс."""
         return self._balance
@@ -156,9 +164,8 @@ class Wallet:
         amount = validate_amount(amount)
         if amount > self._balance:
             code = self.currency_code
-            raise ValueError(
-                f"Недостаточно средств: доступно {format_amount(code, self._balance)} "
-                f"{code}, требуется {format_amount(code, amount)} {code}"
+            raise InsufficientFundsError(
+                format_amount(code, self._balance), format_amount(code, amount), code
             )
         self.balance = round(self._balance - amount, 8)
 

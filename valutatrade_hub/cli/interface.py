@@ -1,29 +1,49 @@
-"""Командный интерфейс: разбор команд и вывод результатов."""
+"""Командный интерфейс: разбор команд, вывод результатов и сообщений об ошибках."""
 
 import shlex
 
 from valutatrade_hub.core import usecases
+from valutatrade_hub.core.currencies import CURRENCIES, supported_codes
+from valutatrade_hub.core.exceptions import (
+    ApiRequestError,
+    CurrencyNotFoundError,
+    InsufficientFundsError,
+)
 from valutatrade_hub.core.utils import (
-    BASE_CURRENCY,
     format_amount,
     format_money,
     format_rate,
 )
+from valutatrade_hub.logging_config import setup_logging
 
 PROMPT = "> "
 SEPARATOR_LINE = "-" * 33
 OPTION_PREFIX = "--"
 
-HELP_TEXT = """Команды:
-  register --username <имя> --password <пароль>  регистрация
-  login --username <имя> --password <пароль>     вход
-  logout                                         выход из аккаунта
-  show-portfolio [--base <валюта>]               портфель и итоговая стоимость
-  buy --currency <код> --amount <количество>     купить валюту (оплата из USD)
-  sell --currency <код> --amount <количество>    продать валюту (выручка в USD)
-  get-rate --from <код> --to <код>               курс валюты
-  help                                           справка
-  exit                                           выход из программы"""
+COMMAND_HELP = {
+    "register": "register --username <имя> --password <пароль> — регистрация",
+    "login": "login --username <имя> --password <пароль> — вход",
+    "logout": "logout — выход из аккаунта",
+    "show-portfolio": "show-portfolio [--base <валюта>] — портфель и итог",
+    "buy": "buy --currency <код> --amount <количество> — купить (оплата из USD)",
+    "sell": "sell --currency <код> --amount <количество> — продать (выручка в USD)",
+    "get-rate": "get-rate --from <код> --to <код> — курс валюты",
+    "currencies": "currencies — список поддерживаемых валют",
+    "help": "help [команда] — справка",
+    "exit": "exit — выход из программы",
+}
+
+
+def print_help(options_tokens):
+    """help или help <команда>."""
+    if options_tokens and options_tokens[0] in COMMAND_HELP:
+        print(COMMAND_HELP[options_tokens[0]])
+        if options_tokens[0] in ("get-rate", "buy", "sell"):
+            print(f"Поддерживаемые валюты: {', '.join(supported_codes())}")
+        return
+    print("Команды:")
+    for text in COMMAND_HELP.values():
+        print(f"  {text}")
 
 
 def parse_options(tokens):
@@ -96,8 +116,7 @@ def cmd_logout(options, session):
 def cmd_show_portfolio(options, session):
     """show-portfolio [--base]."""
     user = require_login(session)
-    base = options.get("base", BASE_CURRENCY).upper()
-    rows, total = usecases.show_portfolio(user, base)
+    rows, total, base = usecases.show_portfolio(user.user_id, options.get("base"))
     if not rows:
         print(f"Портфель пользователя '{user.username}' пуст. Купите валюту: buy")
         return
@@ -112,40 +131,53 @@ def cmd_buy(options, session):
     """buy --currency --amount."""
     user = require_login(session)
     result = usecases.buy_currency(
-        user, require(options, "currency"), require(options, "amount")
+        user.user_id, require(options, "currency"), require(options, "amount")
     )
     code = result["currency"]
     print(
         f"Покупка выполнена: {format_amount(code, result['amount'])} {code} "
-        f"по курсу {format_rate(result['rate'])} {BASE_CURRENCY}/{code}"
+        f"по курсу {format_rate(result['rate'])} {result['base']}/{code}"
     )
     print_changes(result["changes"])
-    print(f"Оценочная стоимость покупки: {format_money(result['total'])} USD")
+    print(
+        f"Оценочная стоимость покупки: {format_money(result['total'])} {result['base']}"
+    )
 
 
 def cmd_sell(options, session):
     """sell --currency --amount."""
     user = require_login(session)
     result = usecases.sell_currency(
-        user, require(options, "currency"), require(options, "amount")
+        user.user_id, require(options, "currency"), require(options, "amount")
     )
     code = result["currency"]
     print(
         f"Продажа выполнена: {format_amount(code, result['amount'])} {code} "
-        f"по курсу {format_rate(result['rate'])} {BASE_CURRENCY}/{code}"
+        f"по курсу {format_rate(result['rate'])} {result['base']}/{code}"
     )
     print_changes(result["changes"])
-    print(f"Оценочная выручка: {format_money(result['total'])} USD")
+    print(f"Оценочная выручка: {format_money(result['total'])} {result['base']}")
 
 
 def cmd_get_rate(options, session):
     """get-rate --from --to."""
     from_code = require(options, "from").upper()
     to_code = require(options, "to").upper()
-    rate, updated_at = usecases.get_rate(from_code, to_code)
+    try:
+        rate, updated_at = usecases.get_rate(from_code, to_code)
+    except ApiRequestError as error:
+        print(error)
+        print(f"Курс {from_code}→{to_code} недоступен. Повторите попытку позже.")
+        return
     updated = updated_at.replace("T", " ")
     print(f"Курс {from_code}→{to_code}: {format_rate(rate)} (обновлено: {updated})")
     print(f"Обратный курс {to_code}→{from_code}: {format_rate(1 / rate)}")
+
+
+def cmd_currencies(options, session):
+    """currencies — get_display_info() каждой валюты (полиморфизм)."""
+    for code in supported_codes():
+        print(CURRENCIES[code].get_display_info())
 
 
 COMMANDS = {
@@ -156,7 +188,25 @@ COMMANDS = {
     "buy": cmd_buy,
     "sell": cmd_sell,
     "get-rate": cmd_get_rate,
+    "currencies": cmd_currencies,
 }
+
+
+def execute(handler, tokens, session):
+    """Выполняет команду и превращает исключения в сообщения для пользователя."""
+    try:
+        handler(parse_options(tokens), session)
+    except InsufficientFundsError as error:
+        print(error)
+    except CurrencyNotFoundError as error:
+        print(error)
+        print(f"Поддерживаемые валюты: {', '.join(supported_codes())}")
+        print("Справка: help get-rate или команда currencies")
+    except ApiRequestError as error:
+        print(error)
+        print("Повторите попытку позже или проверьте подключение к сети.")
+    except (ValueError, TypeError) as error:
+        print(error)
 
 
 def run():
@@ -180,18 +230,16 @@ def run():
         if command == "exit":
             break
         if command == "help":
-            print(HELP_TEXT)
+            print_help(tokens)
             continue
         handler = COMMANDS.get(command)
         if handler is None:
             print(f"Неизвестная команда '{command}'. Введите help для справки.")
             continue
-        try:
-            handler(parse_options(tokens), session)
-        except (ValueError, TypeError) as error:
-            print(error)
+        execute(handler, tokens, session)
 
 
 def main():
     """Точка входа консольной команды project."""
+    setup_logging()
     run()
