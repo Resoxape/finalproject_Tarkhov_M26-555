@@ -1,0 +1,37 @@
+[project]
+name = "finalproject-tarkhov-m26-555"
+version = "0.1.0"
+description = "ValutaTrade Hub — консольный симулятор валютного кошелька"
+readme = "README.md"
+authors = [
+    { name = "Max Tarkhov", email = "maximtarkhov@gmail.com" },
+]
+requires-python = ">=3.12"
+dependencies = [
+    "prettytable>=3.18.0",
+]
+
+[project.scripts]
+project = "valutatrade_hub.cli.interface:main"
+
+[build-system]
+requires = ["uv_build>=0.13.4,<0.14.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "valutatrade_hub"
+module-root = ""
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+exclude = ["venv", ".venv", "dist", "__pycache__"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+ignore = []
+
+[dependency-groups]
+dev = [
+    "ruff>=0.17.4",
+]
