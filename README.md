@@ -12,6 +12,7 @@
 | Запустить приложение | `uv run project` | `make project` |
 | Проверить код линтером | `uv run ruff check .` | `make lint` |
 | Собрать пакет | `uv build` | `make build` |
+| Проверить пакет перед публикацией | `uv build` + `uvx twine check dist/*` | `make publish` |
 | Установить пакет как команду | `uv tool install --force dist/<файл>.whl` | `make package-install` |
 
 ## Команды
@@ -54,6 +55,12 @@ USD-кошелёк пополняется командой `buy --currency USD -
 - BTC: 0.0500  → 2966.86 USD
 ---------------------------------
 ИТОГО: 5,000.00 USD
+> sell --currency BTC --amount 0.01
+Продажа выполнена: 0.0100 BTC по курсу 59337.21 USD/BTC
+Изменения в портфеле:
+- BTC: было 0.0500 → стало 0.0400
+- USD: было 2033.14 → стало 2626.51
+Оценочная выручка: 593.37 USD
 > get-rate --from USD --to BTC
 Курс USD→BTC: 0.00001685 (обновлено: 2025-10-09 10:29:42)
 Обратный курс BTC→USD: 59337.21

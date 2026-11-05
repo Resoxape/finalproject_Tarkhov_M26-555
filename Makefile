@@ -10,7 +10,11 @@ lint:
 build:
 	uv build
 
+publish:
+	uv build
+	uvx twine check dist/*
+
 package-install:
 	uv tool install --force dist/*.whl
 
-.PHONY: install project lint build package-install
+.PHONY: install project lint build publish package-install

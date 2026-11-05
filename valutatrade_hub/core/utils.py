@@ -1,5 +1,7 @@
 """Вспомогательные функции: валидация, форматирование, конвертация валют."""
 
+from datetime import datetime, timezone
+
 from valutatrade_hub.core.currencies import (
     CODE_MAX_LENGTH,
     CODE_MIN_LENGTH,
@@ -9,6 +11,12 @@ from valutatrade_hub.core.currencies import (
 BASE_CURRENCY = "USD"  # валюта расчётов: покупка оплачивается из USD-кошелька
 CRYPTO_DECIMALS = 4
 FIAT_DECIMALS = 2
+# Точность вывода курса: крупные курсы — 2 знака, средние — 4, маленькие — 8
+LARGE_RATE_THRESHOLD = 100
+LARGE_RATE_DECIMALS = 2
+MEDIUM_RATE_THRESHOLD = 1
+MEDIUM_RATE_DECIMALS = 4
+SMALL_RATE_DECIMALS = 8
 
 # Запасные фиксированные курсы для Portfolio.get_total_value() без кеша:
 # сколько USD стоит 1 единица валюты
@@ -59,17 +67,23 @@ def format_amount(currency_code, value):
 
 def format_rate(rate):
     """Курс: 2 знака от 100, 4 знака от 1, 8 знаков для маленьких курсов."""
-    if rate >= 100:
-        return f"{rate:.2f}"
-    if rate >= 1:
-        return f"{rate:.4f}"
-    return f"{rate:.8f}"
+    if rate >= LARGE_RATE_THRESHOLD:
+        return f"{rate:.{LARGE_RATE_DECIMALS}f}"
+    if rate >= MEDIUM_RATE_THRESHOLD:
+        return f"{rate:.{MEDIUM_RATE_DECIMALS}f}"
+    return f"{rate:.{SMALL_RATE_DECIMALS}f}"
 
 
 def format_rate_compact(rate):
     """Курс без лишних нулей для маленьких значений: 0.01016."""
     text = format_rate(rate)
-    return text.rstrip("0") if rate < 1 else text
+    return text.rstrip("0") if rate < MEDIUM_RATE_THRESHOLD else text
+
+
+def parse_utc(value):
+    """ISO-строка -> datetime UTC (строка без пояса считается UTC)."""
+    moment = datetime.fromisoformat(value)
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
 
 
 def format_money(value):

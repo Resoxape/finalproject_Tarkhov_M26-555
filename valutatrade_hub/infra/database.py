@@ -10,6 +10,24 @@ JSON_INDENT = 2
 TMP_SUFFIX = ".tmp"
 
 
+def read_json(path, default):
+    """JSON из файла; default, если файла нет или он повреждён."""
+    try:
+        with open(path, encoding=FILE_ENCODING) as file:
+            return json.load(file)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return default
+
+
+def write_json_atomic(path, data):
+    """Атомарная запись JSON: во временный файл, затем rename поверх исходного."""
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    tmp_path = path + TMP_SUFFIX
+    with open(tmp_path, "w", encoding=FILE_ENCODING) as file:
+        json.dump(data, file, ensure_ascii=False, indent=JSON_INDENT)
+    os.replace(tmp_path, path)
+
+
 class DatabaseManager:
     """Чтение и запись коллекций users / portfolios / rates.
 
@@ -32,20 +50,11 @@ class DatabaseManager:
 
     def read(self, collection, default):
         """Данные коллекции; default, если файла нет или он повреждён."""
-        try:
-            with open(self.path(collection), encoding=FILE_ENCODING) as file:
-                return json.load(file)
-        except (FileNotFoundError, json.JSONDecodeError):
-            return default
+        return read_json(self.path(collection), default)
 
     def write(self, collection, data):
-        """Атомарная запись: во временный файл, затем замена исходного."""
-        path = self.path(collection)
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        tmp_path = path + TMP_SUFFIX
-        with open(tmp_path, "w", encoding=FILE_ENCODING) as file:
-            json.dump(data, file, ensure_ascii=False, indent=JSON_INDENT)
-        os.replace(tmp_path, path)
+        """Атомарная запись коллекции."""
+        write_json_atomic(self.path(collection), data)
 
     def update(self, collection, default, modify):
         """Безопасная операция чтение → модификация → запись.
