@@ -25,6 +25,10 @@
 | `buy --currency <код> --amount <количество>` | покупка валюты, оплата списывается с USD-кошелька |
 | `sell --currency <код> --amount <количество>` | продажа валюты, выручка зачисляется на USD-кошелёк |
 | `get-rate --from <код> --to <код>` | курс валюты |
+| `update-rates [--source coingecko\|exchangerate]` | обновить курсы из API |
+| `show-rates [--currency <код>] [--top <N>] [--base <код>]` | курсы из локального кеша |
+| `rates-history --currency <код> [--limit <N>]` | история курса (таблица) |
+| `schedule-updates [--interval <сек>] [--times <N>]` | периодическое обновление курсов |
 | `currencies` | список поддерживаемых валют |
 | `help [команда]` / `exit` | справка / выход |
 
@@ -89,10 +93,47 @@ USD-кошелёк пополняется командой `buy --currency USD -
 INFO 2026-11-06T00:43:19 BUY user_id=1 currency='BTC' amount=0.0500 rate=59337.21 base='USD' changes=[BTC: 0.0→0.05, USD: 5000.0→2033.1395] result=OK
 ```
 
-## Курсы
+## Parser Service: курсы валют
 
-Курсы кешируются в `data/rates.json`. Если кеш старше 5 минут, курсы
-запрашиваются у Parser Service (пока — заглушка с фиксированными значениями).
+Курсы берутся из двух публичных API:
+
+- **CoinGecko** — криптовалюты (BTC, ETH, SOL), без ключа;
+- **ExchangeRate-API** — фиатные валюты (EUR, GBP, RUB), нужен бесплатный ключ.
+
+Ключ ExchangeRate-API не хранится в коде. Получите его на
+https://www.exchangerate-api.com/ и задайте одним из способов:
+
+```
+# переменная окружения (Windows PowerShell)
+setx EXCHANGERATE_API_KEY "ваш_ключ"     # затем перезапустить терминал
+
+# или файл .env в корне проекта (не отслеживается git)
+EXCHANGERATE_API_KEY=ваш_ключ
+```
+
+Файлы:
+
+- `data/rates.json` — снимок последних курсов для Core Service
+  (`{"pairs": {"BTC_USD": {"rate", "updated_at", "source"}}, "last_refresh"}`);
+- `data/exchange_rates.json` — история всех замеров, `id = <FROM>_<TO>_<timestamp>`;
+- `logs/parser.log` — журнал обновлений.
+
+Если кеш старше TTL (`rates_ttl_seconds`, 5 минут), Core Service при запросе
+курса сам пытается обновить его; если API недоступны, используются последние
+сохранённые курсы с предупреждением.
+
+```
+> update-rates
+INFO: Starting rates update...
+INFO: Fetching from CoinGecko... OK (3 rates)
+INFO: Fetching from ExchangeRate-API... OK (3 rates)
+INFO: Writing 6 rates to data/rates.json...
+Update successful. Total rates updated: 6. Last refresh: 2026-11-06T00:52:03Z
+> show-rates --top 2
+Rates from cache (updated at 2026-11-06T00:52:03Z):
+- BTC_USD: 101234.50
+- ETH_USD: 3890.10
+```
 
 ## Структура
 
@@ -109,6 +150,12 @@ valutatrade_hub/
 ├── infra/
 │   ├── settings.py     # Singleton SettingsLoader
 │   └── database.py     # Singleton DatabaseManager
+├── parser_service/
+│   ├── config.py       # ParserConfig: API, валюты, пути, таймауты
+│   ├── api_clients.py  # BaseApiClient, CoinGeckoClient, ExchangeRateApiClient
+│   ├── updater.py      # RatesUpdater
+│   ├── storage.py      # exchange_rates.json и rates.json
+│   └── scheduler.py    # RatesScheduler
 └── cli/
     └── interface.py    # команды CLI
 main.py               # запуск: uv run main.py

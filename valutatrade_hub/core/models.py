@@ -8,7 +8,7 @@ from valutatrade_hub.core.currencies import get_currency
 from valutatrade_hub.core.exceptions import InsufficientFundsError
 from valutatrade_hub.core.utils import (
     BASE_CURRENCY,
-    STUB_USD_RATES,
+    FALLBACK_USD_RATES,
     format_amount,
     validate_amount,
 )
@@ -17,7 +17,7 @@ MIN_PASSWORD_LENGTH = 4
 SALT_BYTES = 8
 
 # Фиксированные курсы для get_total_value: сколько USD стоит 1 единица валюты
-DEFAULT_EXCHANGE_RATES = {BASE_CURRENCY: 1.0, **STUB_USD_RATES}
+DEFAULT_EXCHANGE_RATES = {BASE_CURRENCY: 1.0, **FALLBACK_USD_RATES}
 
 
 class User:

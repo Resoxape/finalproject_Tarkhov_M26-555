@@ -10,8 +10,9 @@ BASE_CURRENCY = "USD"  # валюта расчётов: покупка опла�
 CRYPTO_DECIMALS = 4
 FIAT_DECIMALS = 2
 
-# Заглушка Parser Service: сколько USD стоит 1 единица валюты
-STUB_USD_RATES = {
+# Запасные фиксированные курсы для Portfolio.get_total_value() без кеша:
+# сколько USD стоит 1 единица валюты
+FALLBACK_USD_RATES = {
     "EUR": 1.0786,
     "GBP": 1.2710,
     "RUB": 0.01016,
@@ -63,6 +64,12 @@ def format_rate(rate):
     if rate >= 1:
         return f"{rate:.4f}"
     return f"{rate:.8f}"
+
+
+def format_rate_compact(rate):
+    """Курс без лишних нулей для маленьких значений: 0.01016."""
+    text = format_rate(rate)
+    return text.rstrip("0") if rate < 1 else text
 
 
 def format_money(value):

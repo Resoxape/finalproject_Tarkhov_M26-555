@@ -1,6 +1,9 @@
 """Командный интерфейс: разбор команд, вывод результатов и сообщений об ошибках."""
 
+import logging
 import shlex
+
+from prettytable import PrettyTable
 
 from valutatrade_hub.core import usecases
 from valutatrade_hub.core.currencies import CURRENCIES, supported_codes
@@ -13,8 +16,16 @@ from valutatrade_hub.core.utils import (
     format_amount,
     format_money,
     format_rate,
+    format_rate_compact,
 )
-from valutatrade_hub.logging_config import setup_logging
+from valutatrade_hub.logging_config import (
+    PARSER_LOGGER_NAME,
+    console_handler,
+    setup_logging,
+)
+from valutatrade_hub.parser_service.config import ParserConfig
+from valutatrade_hub.parser_service.scheduler import RatesScheduler
+from valutatrade_hub.parser_service.updater import create_updater
 
 PROMPT = "> "
 SEPARATOR_LINE = "-" * 33
@@ -28,6 +39,10 @@ COMMAND_HELP = {
     "buy": "buy --currency <код> --amount <количество> — купить (оплата из USD)",
     "sell": "sell --currency <код> --amount <количество> — продать (выручка в USD)",
     "get-rate": "get-rate --from <код> --to <код> — курс валюты",
+    "update-rates": "update-rates [--source coingecko|exchangerate] — обновить курсы",
+    "show-rates": "show-rates [--currency <код>] [--top <N>] [--base <код>] — курсы",
+    "rates-history": "rates-history --currency <код> [--limit <N>] — история курса",
+    "schedule-updates": "schedule-updates [--interval <сек>] [--times <N>] — авто",
     "currencies": "currencies — список поддерживаемых валют",
     "help": "help [команда] — справка",
     "exit": "exit — выход из программы",
@@ -38,7 +53,7 @@ def print_help(options_tokens):
     """help или help <команда>."""
     if options_tokens and options_tokens[0] in COMMAND_HELP:
         print(COMMAND_HELP[options_tokens[0]])
-        if options_tokens[0] in ("get-rate", "buy", "sell"):
+        if options_tokens[0] in ("get-rate", "buy", "sell", "show-rates"):
             print(f"Поддерживаемые валюты: {', '.join(supported_codes())}")
         return
     print("Команды:")
@@ -169,9 +184,98 @@ def cmd_get_rate(options, session):
         print(error)
         print(f"Курс {from_code}→{to_code} недоступен. Повторите попытку позже.")
         return
-    updated = updated_at.replace("T", " ")
+    updated = updated_at.replace("T", " ").removesuffix("Z")
     print(f"Курс {from_code}→{to_code}: {format_rate(rate)} (обновлено: {updated})")
     print(f"Обратный курс {to_code}→{from_code}: {format_rate(1 / rate)}")
+    print_stale_warning()
+
+
+def print_stale_warning():
+    """Предупреждение, если кеш курсов старше TTL."""
+    if usecases.rates_are_stale():
+        print("Внимание: курсы в кеше устарели. Выполните 'update-rates'.")
+
+
+def run_with_console_log(action):
+    """Выполняет action, дублируя логи Parser Service в консоль."""
+    parser_logger = logging.getLogger(PARSER_LOGGER_NAME)
+    handler = console_handler()
+    parser_logger.addHandler(handler)
+    try:
+        return action()
+    finally:
+        parser_logger.removeHandler(handler)
+
+
+def cmd_update_rates(options, session):
+    """update-rates [--source coingecko|exchangerate]."""
+    updater = create_updater(options.get("source"))
+    try:
+        summary = run_with_console_log(updater.run_update)
+    except ApiRequestError as error:
+        print(f"Update failed: {error}")
+        print("Check logs/parser.log for details.")
+        return
+    if summary["errors"]:
+        print("Update completed with errors. Check logs/parser.log for details.")
+    else:
+        print(
+            f"Update successful. Total rates updated: {summary['updated']}. "
+            f"Last refresh: {summary['last_refresh']}"
+        )
+
+
+def cmd_show_rates(options, session):
+    """show-rates [--currency] [--top] [--base]."""
+    pairs, last_refresh = usecases.list_rates(
+        options.get("currency"), options.get("top"), options.get("base")
+    )
+    print(f"Rates from cache (updated at {last_refresh}):")
+    for pair, rate in pairs:
+        print(f"- {pair}: {format_rate_compact(rate)}")
+    print_stale_warning()
+
+
+def cmd_rates_history(options, session):
+    """rates-history --currency [--limit] — таблица PrettyTable."""
+    limit = options.get("limit", "10")
+    if not limit.isdigit() or int(limit) == 0:
+        raise ValueError("'limit' должен быть целым положительным числом")
+    records = usecases.rate_history(require(options, "currency"), int(limit))
+    if not records:
+        print("История пуста. Выполните 'update-rates'.")
+        return
+    table = PrettyTable()
+    table.field_names = ["Пара", "Курс", "Время (UTC)", "Источник"]
+    for record in records:
+        table.add_row(
+            [
+                f"{record['from_currency']}_{record['to_currency']}",
+                format_rate_compact(record["rate"]),
+                record["timestamp"],
+                record["source"],
+            ]
+        )
+    print(table)
+
+
+def cmd_schedule_updates(options, session):
+    """schedule-updates [--interval] [--times] — периодическое обновление."""
+    interval = options.get("interval", str(ParserConfig().UPDATE_INTERVAL_SECONDS))
+    times = options.get("times")
+    if not interval.isdigit() or (times is not None and not times.isdigit()):
+        raise ValueError("'interval' и 'times' должны быть целыми положительными")
+    scheduler = RatesScheduler(create_updater(), int(interval))
+    print(f"Автообновление каждые {interval} с. Остановить: Ctrl+C")
+    try:
+        done = run_with_console_log(
+            lambda: scheduler.run(int(times) if times else None)
+        )
+    except KeyboardInterrupt:
+        scheduler.stop()
+        print("\nАвтообновление остановлено.")
+        return
+    print(f"Автообновление завершено: выполнено обновлений — {done}.")
 
 
 def cmd_currencies(options, session):
@@ -188,6 +292,10 @@ COMMANDS = {
     "buy": cmd_buy,
     "sell": cmd_sell,
     "get-rate": cmd_get_rate,
+    "update-rates": cmd_update_rates,
+    "show-rates": cmd_show_rates,
+    "rates-history": cmd_rates_history,
+    "schedule-updates": cmd_schedule_updates,
     "currencies": cmd_currencies,
 }
 
