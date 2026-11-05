@@ -1,58 +1,37 @@
-"""Константы, работа с JSON-файлами, валидация и форматирование."""
+"""Вспомогательные функции: валидация, форматирование, конвертация валют."""
 
-import json
-import os
+from valutatrade_hub.core.currencies import (
+    CODE_MAX_LENGTH,
+    CODE_MIN_LENGTH,
+    is_crypto,
+)
 
-# Хранилище
-DATA_DIR = "data"
-USERS_FILE = os.path.join(DATA_DIR, "users.json")
-PORTFOLIOS_FILE = os.path.join(DATA_DIR, "portfolios.json")
-RATES_FILE = os.path.join(DATA_DIR, "rates.json")
-FILE_ENCODING = "utf-8"
-JSON_INDENT = 2
-
-# Пользователи
-MIN_PASSWORD_LENGTH = 4
-SALT_BYTES = 8
-
-# Валюты и курсы
-BASE_CURRENCY = "USD"
-RATES_TTL_SECONDS = 5 * 60  # курс считается свежим 5 минут
-RATE_KEY_SEPARATOR = "_"
-CRYPTO_CURRENCIES = {"BTC", "ETH", "SOL", "USDT"}
+BASE_CURRENCY = "USD"  # валюта расчётов: покупка оплачивается из USD-кошелька
 CRYPTO_DECIMALS = 4
 FIAT_DECIMALS = 2
+
 # Заглушка Parser Service: сколько USD стоит 1 единица валюты
 STUB_USD_RATES = {
     "EUR": 1.0786,
+    "GBP": 1.2710,
     "RUB": 0.01016,
     "BTC": 59337.21,
     "ETH": 3720.00,
+    "SOL": 145.30,
 }
-STUB_SOURCE = "ParserServiceStub"
-
-
-def load_json(path, default):
-    """Читает JSON-файл; если файла нет или он повреждён, возвращает default."""
-    try:
-        with open(path, encoding=FILE_ENCODING) as file:
-            return json.load(file)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return default
-
-
-def save_json(path, data):
-    """Сохраняет данные в JSON-файл, создавая директорию при необходимости."""
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    with open(path, "w", encoding=FILE_ENCODING) as file:
-        json.dump(data, file, ensure_ascii=False, indent=JSON_INDENT)
 
 
 def validate_currency_code(code):
-    """Код валюты: непустая строка из букв. Возвращает код в верхнем регистре."""
-    if not isinstance(code, str) or not code.strip().isalpha():
+    """Формат кода: 2–5 букв без пробелов. Возвращает код в верхнем регистре."""
+    if not isinstance(code, str):
         raise ValueError(f"Некорректный код валюты '{code}'")
-    return code.strip().upper()
+    normalized = code.strip().upper()
+    if (
+        not CODE_MIN_LENGTH <= len(normalized) <= CODE_MAX_LENGTH
+        or not normalized.isalpha()
+    ):
+        raise ValueError(f"Некорректный код валюты '{code}'")
+    return normalized
 
 
 def validate_amount(raw):
@@ -66,9 +45,14 @@ def validate_amount(raw):
     return value
 
 
+def convert(amount, from_usd_rate, to_usd_rate):
+    """Конвертация через USD: amount * (from→USD) / (to→USD)."""
+    return amount * from_usd_rate / to_usd_rate
+
+
 def format_amount(currency_code, value):
     """Количество валюты: 4 знака для криптовалют, 2 — для фиатных."""
-    decimals = CRYPTO_DECIMALS if currency_code in CRYPTO_CURRENCIES else FIAT_DECIMALS
+    decimals = CRYPTO_DECIMALS if is_crypto(currency_code) else FIAT_DECIMALS
     return f"{value:.{decimals}f}"
 
 

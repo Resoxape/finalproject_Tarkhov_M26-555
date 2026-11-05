@@ -25,7 +25,8 @@
 | `buy --currency <код> --amount <количество>` | покупка валюты, оплата списывается с USD-кошелька |
 | `sell --currency <код> --amount <количество>` | продажа валюты, выручка зачисляется на USD-кошелёк |
 | `get-rate --from <код> --to <код>` | курс валюты |
-| `help` / `exit` | справка / выход |
+| `currencies` | список поддерживаемых валют |
+| `help [команда]` / `exit` | справка / выход |
 
 USD-кошелёк пополняется командой `buy --currency USD --amount <сумма>`.
 
@@ -54,6 +55,40 @@ USD-кошелёк пополняется командой `buy --currency USD -
 Обратный курс BTC→USD: 59337.21
 ```
 
+## Валюты
+
+Иерархия в `core/currencies.py`: абстрактный `Currency` и наследники
+`FiatCurrency` (страна эмиссии) и `CryptoCurrency` (алгоритм, капитализация).
+Поддерживаются USD, EUR, GBP, RUB, BTC, ETH, SOL; `get_currency(code)` бросает
+`CurrencyNotFoundError` для неизвестного кода.
+
+```
+[FIAT] USD — US Dollar (Issuing: United States)
+[CRYPTO] BTC — Bitcoin (Algo: SHA-256, MCAP: 1.12e12)
+```
+
+## Ошибки
+
+| Исключение | Когда | Что видит пользователь |
+|---|---|---|
+| `InsufficientFundsError` | не хватает средств при продаже или для оплаты покупки | `Недостаточно средств: доступно 0.0400 BTC, требуется 0.5000 BTC` |
+| `CurrencyNotFoundError` | неизвестный код валюты | `Неизвестная валюта 'XYZ'` + список поддерживаемых валют |
+| `ApiRequestError` | не удалось обновить курсы | `Ошибка при обращении к внешнему API: ...` + совет повторить позже |
+
+## Настройки и логи
+
+Конфигурация — секция `[tool.valutatrade]` в `pyproject.toml`, читается
+синглтоном `SettingsLoader` (пути к JSON, TTL курсов, базовая валюта, логи).
+Доступ к JSON-файлам — через синглтон `DatabaseManager`
+(чтение → изменение → атомарная запись).
+
+Операции `register`, `login`, `buy`, `sell` логируются декоратором `@log_action`
+в `logs/actions.log` (ротация по размеру, уровень INFO):
+
+```
+INFO 2026-11-06T00:43:19 BUY user_id=1 currency='BTC' amount=0.0500 rate=59337.21 base='USD' changes=[BTC: 0.0→0.05, USD: 5000.0→2033.1395] result=OK
+```
+
 ## Курсы
 
 Курсы кешируются в `data/rates.json`. Если кеш старше 5 минут, курсы
@@ -63,11 +98,18 @@ USD-кошелёк пополняется командой `buy --currency USD -
 
 ```
 valutatrade_hub/
+├── logging_config.py   # настройка логов
+├── decorators.py       # @log_action
 ├── core/
-│   ├── models.py     # классы User, Wallet, Portfolio
-│   ├── usecases.py   # бизнес-логика
-│   └── utils.py      # константы, JSON, валидация, форматирование
+│   ├── currencies.py   # Currency, FiatCurrency, CryptoCurrency, get_currency
+│   ├── exceptions.py   # пользовательские исключения
+│   ├── models.py       # классы User, Wallet, Portfolio
+│   ├── usecases.py     # бизнес-логика
+│   └── utils.py        # валидация, форматирование, конвертация
+├── infra/
+│   ├── settings.py     # Singleton SettingsLoader
+│   └── database.py     # Singleton DatabaseManager
 └── cli/
-    └── interface.py  # команды CLI
+    └── interface.py    # команды CLI
 main.py               # запуск: uv run main.py
 ```
