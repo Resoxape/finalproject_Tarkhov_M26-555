@@ -4,9 +4,9 @@
 DatabaseManager — все чтения и записи JSON-хранилища.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 
-from valutatrade_hub.core.currencies import get_currency
+from valutatrade_hub.core.currencies import get_currency, is_crypto
 from valutatrade_hub.core.exceptions import (
     ApiRequestError,
     CurrencyNotFoundError,
@@ -15,7 +15,6 @@ from valutatrade_hub.core.exceptions import (
 from valutatrade_hub.core.models import Portfolio, User
 from valutatrade_hub.core.utils import (
     BASE_CURRENCY,
-    STUB_USD_RATES,
     convert,
     validate_amount,
     validate_currency_code,
@@ -23,12 +22,15 @@ from valutatrade_hub.core.utils import (
 from valutatrade_hub.decorators import log_action
 from valutatrade_hub.infra.database import DatabaseManager
 from valutatrade_hub.infra.settings import SettingsLoader
+from valutatrade_hub.parser_service.updater import create_updater
 
 settings = SettingsLoader()
 db = DatabaseManager()
 
-RATE_KEY_SEPARATOR = "_"
-STUB_SOURCE = "ParserServiceStub"
+PAIR_SEPARATOR = "_"
+CACHE_EMPTY_MESSAGE = (
+    "Локальный кеш курсов пуст. Выполните 'update-rates', чтобы загрузить данные."
+)
 
 
 # ---------- Пользователи ----------
@@ -107,51 +109,59 @@ def _change_portfolio(user_id, action):
 # ---------- Курсы ----------
 
 
-def rate_key(currency_code):
-    """Ключ курса к USD в rates.json: 'BTC' -> 'BTC_USD'."""
-    return f"{currency_code}{RATE_KEY_SEPARATOR}{BASE_CURRENCY}"
+def parse_utc(value):
+    """ISO-строка -> datetime UTC (строка без пояса считается UTC)."""
+    moment = datetime.fromisoformat(value)
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
 
 
-def is_fresh(rates):
-    """Кеш курсов моложе TTL из SettingsLoader."""
-    last_refresh = rates.get("last_refresh")
+def read_rates_cache():
+    """Снимок курсов rates.json в формате {"pairs": {...}, "last_refresh": ...}."""
+    cache = db.read("rates", {})
+    if not isinstance(cache, dict) or not isinstance(cache.get("pairs"), dict):
+        return {"pairs": {}}
+    return cache
+
+
+def is_fresh(cache):
+    """Кеш моложе TTL из SettingsLoader."""
+    last_refresh = cache.get("last_refresh")
     if not last_refresh:
         return False
-    age = datetime.now() - datetime.fromisoformat(last_refresh)
+    age = datetime.now(timezone.utc) - parse_utc(last_refresh)
     return age.total_seconds() < settings.get("rates_ttl_seconds")
 
 
-def fetch_rates_from_parser():
-    """Заглушка Parser Service: курсы с текущим временем, сохраняются в кеш."""
-    now = datetime.now().replace(microsecond=0).isoformat()
-    rates = {
-        rate_key(code): {"rate": rate, "updated_at": now}
-        for code, rate in STUB_USD_RATES.items()
-    }
-    rates["source"] = STUB_SOURCE
-    rates["last_refresh"] = now
-    try:
-        db.write("rates", rates)
-    except OSError as error:
-        raise ApiRequestError(f"не удалось сохранить курсы ({error})") from None
-    return rates
+def rates_are_stale():
+    """True, если кеш курсов старше TTL (CLI предупреждает пользователя)."""
+    return not is_fresh(read_rates_cache())
 
 
 def get_rates():
-    """Курсы из кеша, а если кеш устарел — обновлённые от Parser Service."""
-    rates = db.read("rates", {})
-    if is_fresh(rates):
-        return rates
-    return fetch_rates_from_parser()
+    """Курсы из кеша; устаревший кеш пытаемся обновить через Parser Service.
+
+    Если обновить не удалось, но старые данные есть — работаем с ними
+    (CLI покажет предупреждение). Если данных нет совсем — ApiRequestError.
+    """
+    cache = read_rates_cache()
+    if is_fresh(cache):
+        return cache
+    try:
+        create_updater().run_update()
+    except ApiRequestError:
+        if not cache["pairs"]:
+            raise
+        return cache
+    return read_rates_cache()
 
 
-def usd_rates(rates):
+def usd_rates(cache):
     """{код: сколько USD стоит 1 единица}, включая сам USD."""
     result = {BASE_CURRENCY: 1.0}
-    suffix = f"{RATE_KEY_SEPARATOR}{BASE_CURRENCY}"
-    for key, value in rates.items():
-        if key.endswith(suffix) and isinstance(value, dict):
-            result[key.removesuffix(suffix)] = value["rate"]
+    for pair, entry in cache["pairs"].items():
+        from_code, _, to_code = pair.partition(PAIR_SEPARATOR)
+        if to_code == BASE_CURRENCY:
+            result[from_code] = entry["rate"]
     return result
 
 
@@ -159,17 +169,70 @@ def get_rate(from_code, to_code):
     """Курс from→to и время обновления. Единый контракт получения курса."""
     from_code = get_currency(validate_currency_code(from_code)).code
     to_code = get_currency(validate_currency_code(to_code)).code
-    rates = get_rates()
-    known = usd_rates(rates)
+    cache = get_rates()
+    known = usd_rates(cache)
     for code in (from_code, to_code):
         if code not in known:
             raise ApiRequestError(f"нет данных о курсе {code}→{BASE_CURRENCY}")
-    updated_at = rates.get("last_refresh", "")
+    updated_at = cache.get("last_refresh", "")
     for code in (from_code, to_code):
-        entry = rates.get(rate_key(code))
+        entry = cache["pairs"].get(f"{code}{PAIR_SEPARATOR}{BASE_CURRENCY}")
         if entry:
             updated_at = entry["updated_at"]
     return convert(1.0, known[from_code], known[to_code]), updated_at
+
+
+def list_rates(currency_code=None, top=None, base_currency=None):
+    """Курсы из кеша для show-rates: [(пара, курс)] и время обновления.
+
+    currency_code — только эта валюта; top — N самых дорогих криптовалют;
+    base_currency — пересчитать все курсы к этой базе.
+    """
+    cache = read_rates_cache()
+    if not cache["pairs"]:
+        raise ValueError(CACHE_EMPTY_MESSAGE)
+    known = usd_rates(cache)
+    base = BASE_CURRENCY
+    if base_currency:
+        base = validate_currency_code(base_currency)
+        if base not in known:
+            raise ValueError(f"Курс для '{base}' не найден в кеше.")
+
+    rows = [
+        (code, convert(1.0, rate, known[base]))
+        for code, rate in known.items()
+        if code != base
+    ]
+    if currency_code:
+        code = validate_currency_code(currency_code)
+        rows = [row for row in rows if row[0] == code]
+        if not rows:
+            raise ValueError(f"Курс для '{code}' не найден в кеше.")
+    if top is not None:
+        try:
+            limit = int(top)
+        except ValueError:
+            raise ValueError("'top' должен быть целым положительным числом") from None
+        if limit <= 0:
+            raise ValueError("'top' должен быть целым положительным числом")
+        rows = sorted((r for r in rows if is_crypto(r[0])), key=lambda r: -r[1])
+        rows = rows[:limit]
+    else:
+        rows.sort()
+    pairs = [(f"{code}{PAIR_SEPARATOR}{base}", rate) for code, rate in rows]
+    return pairs, cache.get("last_refresh", "")
+
+
+def rate_history(currency_code, limit=10):
+    """Последние замеры курса валюты к USD из exchange_rates.json."""
+    code = get_currency(validate_currency_code(currency_code)).code
+    records = [
+        record
+        for record in db.read("history", [])
+        if record.get("from_currency") == code
+    ]
+    records.sort(key=lambda record: record["timestamp"])
+    return records[-limit:]
 
 
 # ---------- Операции с портфелем ----------
